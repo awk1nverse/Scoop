@@ -36,6 +36,8 @@ function Select-CurrentVersion { # 'manifest.ps1'
         App's name
     .PARAMETER Global
         Globally installed application
+    .PARAMETER Portable
+        Check portable installations
     #>
     [OutputType([String])]
     [CmdletBinding()]
@@ -46,9 +48,18 @@ function Select-CurrentVersion { # 'manifest.ps1'
         $AppName,
         [Parameter(Position = 1)]
         [Switch]
-        $Global
+        $Global,
+        [Parameter(Position = 2)]
+        [Switch]
+        $Portable
     )
     process {
+        # Portable installations don't use 'current' junction - return null
+        # Caller should use Get-InstalledVersion to get all portable versions
+        if ($Portable) {
+            return $null
+        }
+
         $currentPath = "$(appdir $AppName $Global)\current"
         if (!(get_config NO_JUNCTION)) {
             $manifestPath = "$currentPath\scoop-manifest.json"
@@ -78,6 +89,8 @@ function Get-InstalledVersion {
         App's name
     .PARAMETER Global
         Globally installed application
+    .PARAMETER Portable
+        Check portable installations
     .NOTES
         Versions are sorted from oldest to newest, i.e., latest installed version is the last one in the output array.
         If no installed version found, empty array will be returned.
@@ -91,9 +104,40 @@ function Get-InstalledVersion {
         $AppName,
         [Parameter(Position = 1)]
         [Switch]
-        $Global
+        $Global,
+        [Parameter(Position = 2)]
+        [Switch]
+        $Portable
     )
     process {
+        # For portable installations, scan the portable directory for version-specific subdirectories
+        if ($Portable) {
+            if (!$portabledir -or !(Test-Path $portabledir)) {
+                return @()
+            }
+            $sanitizedApp = sanitary_path $AppName
+            $pattern = "${sanitizedApp}_v*"
+            $portableApps = Get-ChildItem "$portabledir\$pattern" -Directory -ErrorAction SilentlyContinue
+
+            $versions = @()
+            foreach ($dir in $portableApps) {
+                # Extract version from directory name: AppName_vVersion -> Version
+                if ($dir.Name -match "^${sanitizedApp}_v(.+)$") {
+                    $version = $matches[1]
+                    # Verify it's a valid portable installation by checking for metadata
+                    $metadataPath = "$($dir.FullName)\Other\Scoop\scoop-install.json"
+                    if (!(Test-Path $metadataPath)) {
+                        $metadataPath = "$($dir.FullName)\Other\Scoop\install.json"
+                    }
+                    if (Test-Path $metadataPath) {
+                        $versions += $version
+                    }
+                }
+            }
+            return $versions
+        }
+
+        # Normal Scoop installation lookup
         $appPath = appdir $AppName $Global
         if (Test-Path $appPath) {
             $versions = @((Get-ChildItem "$appPath\*\scoop-install.json", "$appPath\*\install.json" -ErrorAction SilentlyContinue |
