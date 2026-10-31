@@ -31,27 +31,11 @@ $global = $opt.g -or $opt.global
 $purge = $opt.p -or $opt.purge
 $portableSpec = $opt.portable
 
-if (!$apps) {
-    error '<app> missing'
-    my_usage
-    exit 1
-}
-
-if ($global -and !(is_admin)) {
-    error 'You need admin rights to uninstall global apps.'
-    exit 1
-}
-
-if ($apps -eq 'scoop') {
-    & "$PSScriptRoot\..\bin\uninstall.ps1" $global $purge
-    exit
-}
-
-# Handle portable uninstall
+# Handle portable uninstall first (doesn't need app in normal Scoop)
 if ($portableSpec) {
     $portableApp, $null, $portableVersion = parse_app $portableSpec
     if (!$portableVersion) {
-        error "Portable uninstall requires app@version format (e.g., notepadplusplus@8.7)"
+        error "Portable uninstall requires app@version format (e.g., 7zip@26.05)"
         exit 1
     }
 
@@ -99,6 +83,23 @@ if ($portableSpec) {
 
     Invoke-HookScript -HookType 'post_uninstall' -Manifest $manifest -Arch $architecture
     exit 0
+}
+
+# For normal uninstall, require app argument
+if (!$apps) {
+    error '<app> missing'
+    my_usage
+    exit 1
+}
+
+if ($global -and !(is_admin)) {
+    error 'You need admin rights to uninstall global apps.'
+    exit 1
+}
+
+if ($apps -eq 'scoop') {
+    & "$PSScriptRoot\..\bin\uninstall.ps1" $global $purge
+    exit
 }
 
 $apps = Confirm-InstallationStatus $apps -Global:$global
