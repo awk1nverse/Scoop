@@ -120,33 +120,78 @@ function manifest($app, $bucket, $url) {
     $manifest
 }
 
-function save_installed_manifest($app, $bucket, $dir, $url) {
+# Portable-Launcher: Helper function to get metadata directory
+# For normal installations: returns the version directory
+# For portable installations: returns Other\Scoop\ subdirectory
+function Get-MetadataDir($dir, $portable) {
+    if ($portable) {
+        # Metadata goes in Other\Scoop\ for portable installations
+        return "$dir\Other\Scoop"
+    }
+    # Normal installations store metadata in the version directory
+    return $dir
+}
+
+function save_installed_manifest($app, $bucket, $dir, $url, $portable = $false) {
+    $metadataDir = Get-MetadataDir $dir $portable
+    if ($portable) {
+        # Ensure Other\Scoop\ directory exists
+        ensure $metadataDir | Out-Null
+    }
+
+    $manifestPath = "$metadataDir\scoop-manifest.json"
     if ($url) {
         $wc = New-Object Net.Webclient
         $wc.Headers.Add('User-Agent', (Get-UserAgent))
         $data = $wc.DownloadData($url)
-        (Get-Encoding($wc)).GetString($data) | Out-UTF8File "$dir\scoop-manifest.json"
+        (Get-Encoding($wc)).GetString($data) | Out-UTF8File $manifestPath
     } else {
-        Copy-Item (manifest_path $app $bucket) "$dir\scoop-manifest.json"
+        Copy-Item (manifest_path $app $bucket) $manifestPath
     }
 }
 
-function installed_manifest($app, $version, $global) {
+function installed_manifest($app, $version, $global, $portable = $false) {
+    if ($portable) {
+        # For portable installations, check Other\Scoop\ directory
+        $dir = portableappdir $app $version
+        $metadataDir = "$dir\Other\Scoop"
+        $json = "$metadataDir\scoop-manifest.json"
+        if (Test-Path $json) { return parse_json $json }
+        return parse_json "$metadataDir\manifest.json"
+    }
+
+    # Normal Scoop installation
     $dir = versiondir $app $version $global
     $json = "$dir\scoop-manifest.json"
     if (Test-Path $json) { return parse_json $json }
     parse_json "$dir\manifest.json"
 }
 
-function save_install_info($info, $dir) {
+function save_install_info($info, $dir, $portable = $false) {
     $nulls = $info.keys | Where-Object { $null -eq $info[$_] }
     $nulls | ForEach-Object { $info.remove($_) } # strip null-valued
 
+    $metadataDir = Get-MetadataDir $dir $portable
+    if ($portable) {
+        # Ensure Other\Scoop\ directory exists
+        ensure $metadataDir | Out-Null
+    }
+
     $file_content = $info | ConvertToPrettyJson # in 'json.ps1'
-    [System.IO.File]::WriteAllLines("$dir\scoop-install.json", $file_content)
+    [System.IO.File]::WriteAllLines("$metadataDir\scoop-install.json", $file_content)
 }
 
-function install_info($app, $version, $global) {
+function install_info($app, $version, $global, $portable = $false) {
+    if ($portable) {
+        # For portable installations, check Other\Scoop\ directory
+        $dir = portableappdir $app $version
+        $metadataDir = "$dir\Other\Scoop"
+        $json = "$metadataDir\scoop-install.json"
+        if (Test-Path $json) { return parse_json $json }
+        return parse_json "$metadataDir\install.json"
+    }
+
+    # Normal Scoop installation
     $dir = versiondir $app $version $global
     $json = "$dir\scoop-install.json"
     if (Test-Path $json) { return parse_json $json }
