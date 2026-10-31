@@ -3,8 +3,9 @@
 # Help: e.g. scoop uninstall git
 #
 # Options:
-#   -g, --global   Uninstall a globally installed app
-#   -p, --purge    Remove all persistent data
+#   -g, --global              Uninstall a globally installed app
+#   -p, --purge               Remove all persistent data
+#   --portable <app@version>  Uninstall a specific portable installation
 
 . "$PSScriptRoot\..\lib\getopt.ps1"
 . "$PSScriptRoot\..\lib\manifest.ps1" # 'Get-Manifest' 'Select-CurrentVersion' (indirectly)
@@ -16,7 +17,7 @@
 . "$PSScriptRoot\..\lib\versions.ps1" # 'Select-CurrentVersion'
 
 # options
-$opt, $apps, $err = getopt $args 'gp' 'global', 'purge'
+$opt, $apps, $err = getopt $args 'gp' 'global', 'purge', 'portable='
 
 if ($err) {
     error "scoop uninstall: $err"
@@ -25,6 +26,7 @@ if ($err) {
 
 $global = $opt.g -or $opt.global
 $purge = $opt.p -or $opt.purge
+$portableSpec = $opt.portable
 
 if (!$apps) {
     error '<app> missing'
@@ -40,6 +42,60 @@ if ($global -and !(is_admin)) {
 if ($apps -eq 'scoop') {
     & "$PSScriptRoot\..\bin\uninstall.ps1" $global $purge
     exit
+}
+
+# Handle portable uninstall
+if ($portableSpec) {
+    $portableApp, $null, $portableVersion = parse_app $portableSpec
+    if (!$portableVersion) {
+        error "Portable uninstall requires app@version format (e.g., notepadplusplus@8.7)"
+        exit 1
+    }
+
+    if (!$portabledir) {
+        error "Portable directory not configured. Set SCOOP_PORTABLE environment variable or run 'scoop config PORTABLE_PATH <path>'"
+        exit 1
+    }
+
+    $portableRoot = portableappdir $portableApp $portableVersion
+    if (!(Test-Path $portableRoot)) {
+        error "'$portableApp' ($portableVersion) is not installed in portable mode."
+        exit 1
+    }
+
+    Write-Host "Uninstalling portable '$portableApp' ($portableVersion)."
+
+    $dir = portableappsubdir $portableApp $portableVersion
+    $scoopMetadataDir = portablescoopdir $portableApp $portableVersion
+
+    # Load manifest and install info from portable metadata location
+    $manifest = installed_manifest $portableApp $portableVersion $false $true
+    $install = install_info $portableApp $portableVersion $false $true
+    $architecture = $install.architecture
+
+    Invoke-HookScript -HookType 'pre_uninstall' -Manifest $manifest -Arch $architecture
+
+    # Check for running processes
+    if (test_running_process $portableApp $false) {
+        exit 1
+    }
+
+    # Run uninstaller if present
+    Invoke-Installer -Path $dir -Manifest $manifest -ProcessorArchitecture $architecture -Global:$false -Uninstall
+
+    # Portable installations have no system integration to clean up (no shims, shortcuts, env vars)
+
+    # Remove the entire portable app directory
+    try {
+        Remove-Item $portableRoot -Recurse -Force -ErrorAction Stop
+        success "'$portableApp' ($portableVersion) was uninstalled."
+    } catch {
+        error "Couldn't remove '$(friendly_path $portableRoot)'; it may be in use."
+        exit 1
+    }
+
+    Invoke-HookScript -HookType 'post_uninstall' -Manifest $manifest -Arch $architecture
+    exit 0
 }
 
 $apps = Confirm-InstallationStatus $apps -Global:$global
@@ -103,18 +159,21 @@ if (!$apps) { exit 0 }
 
         Invoke-HookScript -HookType 'post_uninstall' -Manifest $manifest -Arch $architecture
     }
-    # remove older versions
-    $oldVersions = @(Get-ChildItem $appDir -Name -Exclude 'current')
-    foreach ($version in $oldVersions) {
-        Write-Host "Removing older version ($version)."
-        $dir = versiondir $app $version $global
-        try {
-            # unlink all potential old link before doing recursive Remove-Item
-            unlink_persist_data $manifest $dir
-            Remove-Item $dir -Recurse -Force -ErrorAction Stop
-        } catch {
-            error "Couldn't remove '$(friendly_path $dir)'; it may be in use."
-            continue app_loop
+    # Remove older versions only for normal installations
+    # Portable installations are version-specific - don't remove other versions
+    if (!$portableSpec) {
+        $oldVersions = @(Get-ChildItem $appDir -Name -Exclude 'current')
+        foreach ($version in $oldVersions) {
+            Write-Host "Removing older version ($version)."
+            $dir = versiondir $app $version $global
+            try {
+                # unlink all potential old link before doing recursive Remove-Item
+                unlink_persist_data $manifest $dir
+                Remove-Item $dir -Recurse -Force -ErrorAction Stop
+            } catch {
+                error "Couldn't remove '$(friendly_path $dir)'; it may be in use."
+                continue app_loop
+            }
         }
     }
     if (Test-Path ($currentDir = Join-Path $appDir 'current')) {
