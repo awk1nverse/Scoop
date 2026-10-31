@@ -80,10 +80,29 @@ if ($apps.length -eq 1) {
     if ($app.EndsWith('.json')) {
         $app = [System.IO.Path]::GetFileNameWithoutExtension($app)
     }
-    $curVersion = Select-CurrentVersion -AppName $app -Global:$global
-    if ($null -eq $version -and $curVersion) {
-        warn "'$app' ($curVersion) is already installed.`nUse 'scoop update $app$(if ($global) { ' --global' })' to install a new version."
-        exit 0
+
+    # For portable installations, check if the specific version already exists
+    if ($portable) {
+        if ($null -eq $version) {
+            # Get latest version from manifest to check
+            $manifest = manifest $app $null $null
+            $version = $manifest.version
+        }
+        # Check if portable installation already exists
+        if ($portabledir) {
+            $portableRoot = portableappdir $app $version
+            if (Test-Path $portableRoot) {
+                warn "'$app' ($version) is already installed in portable mode at '$(friendly_path $portableRoot)'."
+                exit 0
+            }
+        }
+    } else {
+        # Normal installation check
+        $curVersion = Select-CurrentVersion -AppName $app -Global:$global
+        if ($null -eq $version -and $curVersion) {
+            warn "'$app' ($curVersion) is already installed.`nUse 'scoop update $app$(if ($global) { ' --global' })' to install a new version."
+            exit 0
+        }
     }
 }
 
@@ -104,7 +123,16 @@ $resolved = @()
 $specific_versions_paths = $specific_versions | ForEach-Object {
     $spec = $_
     $app, $bucket, $version = parse_app $spec
-    if (installed_manifest $app $version) {
+
+    # For portable installations, check if the specific version already exists
+    if ($portable -and $portabledir) {
+        $portableRoot = portableappdir $app $version
+        if (Test-Path $portableRoot) {
+            warn "'$app' ($version) is already installed in portable mode at '$(friendly_path $portableRoot)'."
+            $resolved += $spec
+            continue
+        }
+    } elseif (installed_manifest $app $version) {
         warn "'$app' ($version) is already installed.`nUse 'scoop update $app$(if ($global) { ' --global' })' to install a new version."
         $resolved += $spec
         continue

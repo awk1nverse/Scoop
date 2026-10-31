@@ -2,10 +2,13 @@
 # Summary: Uninstall an app
 # Help: e.g. scoop uninstall git
 #
+# To uninstall a portable installation:
+#      scoop uninstall --portable 7zip@26.05
+#
 # Options:
 #   -g, --global              Uninstall a globally installed app
 #   -p, --purge               Remove all persistent data
-#   --portable <app@version>  Uninstall a specific portable installation
+#   --portable <app@version>  Uninstall a specific portable installation (requires app@version format)
 
 . "$PSScriptRoot\..\lib\getopt.ps1"
 . "$PSScriptRoot\..\lib\manifest.ps1" # 'Get-Manifest' 'Select-CurrentVersion' (indirectly)
