@@ -5,7 +5,7 @@ function nightly_version($quiet = $false) {
     return "nightly-$(Get-Date -Format 'yyyyMMdd')"
 }
 
-function install_app($app, $architecture, $global, $suggested, $use_cache = $true, $check_hash = $true) {
+function install_app($app, $architecture, $global, $suggested, $use_cache = $true, $check_hash = $true, $portable = $false) {
     $app, $manifest, $bucket, $url = Get-Manifest $app
 
     if (!$manifest) {
@@ -30,6 +30,18 @@ function install_app($app, $architecture, $global, $suggested, $use_cache = $tru
         return
     }
 
+    # Portable-Launcher: Validate portable directory is configured
+    if ($portable -and !$portabledir) {
+        abort "Portable mode requires configuration. Set SCOOP_PORTABLE environment variable or run 'scoop config PORTABLE_PATH <path>'"
+    }
+
+    # Portable-Launcher: For portable mode, use version-specific app identity
+    # This allows multiple versions of the same app to coexist
+    $appIdentity = $app
+    if ($portable) {
+        $appIdentity = "${app}_v${version}"
+    }
+
     if ((get_config SHOW_MANIFEST $false) -and ($MyInvocation.ScriptName -notlike '*scoop-update*')) {
         Write-Host "Manifest: $app.json"
         $style = get_config CAT_STYLE
@@ -43,40 +55,74 @@ function install_app($app, $architecture, $global, $suggested, $use_cache = $tru
             return
         }
     }
-    Write-Output "Installing '$app' ($version) [$architecture]$(if ($bucket) { " from '$bucket' bucket" } elseif ($url -like (usermanifestsdir) + '\*') { ' from generated manifest' } else { " from '$url'" })"
 
-    $dir = ensure (versiondir $app $version $global)
-    $original_dir = $dir # keep reference to real (not linked) directory
-    $persist_dir = persistdir $app $global
+    if ($portable) {
+        Write-Output "Installing '$app' ($version) [$architecture] as portable app$(if ($bucket) { " from '$bucket' bucket" } elseif ($url -like (usermanifestsdir) + '\*') { ' from generated manifest' } else { " from '$url'" })"
+    } else {
+        Write-Output "Installing '$app' ($version) [$architecture]$(if ($bucket) { " from '$bucket' bucket" } elseif ($url -like (usermanifestsdir) + '\*') { ' from generated manifest' } else { " from '$url'" })"
+    }
+
+    # Portable-Launcher: Use portable directory structure or normal Scoop directory
+    if ($portable) {
+        # Portable mode: use PortableApps.com structure
+        # Root: <portabledir>\<AppName_vVersion>\
+        # App files: <portabledir>\<AppName_vVersion>\App\
+        $portableRoot = ensure (portableappdir $app $version)
+        $dir = ensure (portableappsubdir $app $version)
+        $original_dir = $dir
+        # Portable apps use their own Data\ directory for persistence
+        $persist_dir = portabledatadir $app $version
+    } else {
+        # Normal mode: use standard Scoop structure
+        $dir = ensure (versiondir $app $version $global)
+        $original_dir = $dir
+        $persist_dir = persistdir $app $global
+    }
 
     $fname = Invoke-ScoopDownload $app $version $manifest $bucket $architecture $dir $use_cache $check_hash
     Invoke-Extraction -Path $dir -Name $fname -Manifest $manifest -ProcessorArchitecture $architecture
     Invoke-HookScript -HookType 'pre_install' -Manifest $manifest -ProcessorArchitecture $architecture
 
     Invoke-Installer -Path $dir -Name $fname -Manifest $manifest -ProcessorArchitecture $architecture -AppName $app -Global:$global
-    ensure_install_dir_not_in_path $dir $global
-    $dir = link_current $dir
-    create_shims $manifest $dir $global $architecture
-    create_startmenu_shortcuts $manifest $dir $global $architecture
-    install_psmodule $manifest $dir $global
-    env_add_path $manifest $dir $global $architecture
-    env_set $manifest $global $architecture
+
+    # Portable-Launcher: Skip system integration for portable installations
+    if (!$portable) {
+        ensure_install_dir_not_in_path $dir $global
+        $dir = link_current $dir
+        create_shims $manifest $dir $global $architecture
+        create_startmenu_shortcuts $manifest $dir $global $architecture
+        install_psmodule $manifest $dir $global
+        env_add_path $manifest $dir $global $architecture
+        env_set $manifest $global $architecture
+    }
 
     # persist data
     persist_data $manifest $original_dir $persist_dir
-    persist_permission $manifest $global
+    if (!$portable) {
+        persist_permission $manifest $global
+    }
 
     Invoke-HookScript -HookType 'post_install' -Manifest $manifest -ProcessorArchitecture $architecture
 
-    # save info for uninstall
-    save_installed_manifest $app $bucket $dir $url
-    save_install_info @{ 'architecture' = $architecture; 'url' = $url; 'bucket' = $bucket } $dir
+    # Portable-Launcher: Save metadata to Other\Scoop\ for portable, version dir for normal
+    if ($portable) {
+        # For portable mode, pass the root directory (not App\ subdirectory)
+        save_installed_manifest $app $bucket $portableRoot $url $portable
+        save_install_info @{ 'architecture' = $architecture; 'url' = $url; 'bucket' = $bucket; 'portable' = $true } $portableRoot $portable
+    } else {
+        save_installed_manifest $app $bucket $dir $url
+        save_install_info @{ 'architecture' = $architecture; 'url' = $url; 'bucket' = $bucket } $dir
+    }
 
     if ($manifest.suggest) {
         $suggested[$app] = $manifest.suggest
     }
 
-    success "'$app' ($version) was installed successfully!"
+    if ($portable) {
+        success "'$app' ($version) was installed successfully as portable app at '$(friendly_path $portableRoot)'!"
+    } else {
+        success "'$app' ($version) was installed successfully!"
+    }
 
     show_notes $manifest $dir $original_dir $persist_dir
 }
