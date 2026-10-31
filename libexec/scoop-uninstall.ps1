@@ -81,12 +81,37 @@ if ($portableSpec) {
     # Portable installations have no system integration to clean up (no shims, shortcuts, env vars)
 
     # Remove the entire portable app directory
-    try {
-        Remove-Item $portableRoot -Recurse -Force -ErrorAction Stop
+    # Try multiple approaches as files may be locked temporarily
+    $removed = $false
+    $maxAttempts = 3
+
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        try {
+            # First try to remove read-only attributes that might block deletion
+            Get-ChildItem $portableRoot -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object {
+                if ($_.Attributes -band [System.IO.FileAttributes]::ReadOnly) {
+                    $_.Attributes = $_.Attributes -bxor [System.IO.FileAttributes]::ReadOnly
+                }
+            }
+
+            Remove-Item $portableRoot -Recurse -Force -ErrorAction Stop
+            $removed = $true
+            break
+        } catch {
+            if ($attempt -lt $maxAttempts) {
+                warn "Removal attempt $attempt failed, retrying..."
+                Start-Sleep -Milliseconds 500
+            } else {
+                error "Couldn't remove '$(friendly_path $portableRoot)' after $maxAttempts attempts."
+                error "Error: $($_.Exception.Message)"
+                error "Try closing any programs that might be using files in this directory."
+                exit 1
+            }
+        }
+    }
+
+    if ($removed) {
         success "'$portableApp' ($portableVersion) was uninstalled."
-    } catch {
-        error "Couldn't remove '$(friendly_path $portableRoot)'; it may be in use."
-        exit 1
     }
 
     Invoke-HookScript -HookType 'post_uninstall' -Manifest $manifest -Arch $architecture
