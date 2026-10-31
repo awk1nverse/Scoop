@@ -62,9 +62,17 @@ if ($portableSpec) {
 
     Invoke-HookScript -HookType 'pre_uninstall' -Manifest $manifest -Arch $architecture
 
-    # Check for running processes
-    if (test_running_process $portableApp $false) {
-        exit 1
+    # Check for running processes in the portable app directory
+    $running_processes = Get-Process | Where-Object { $_.Path -like "$portableRoot\*" } | Out-String
+    if ($running_processes) {
+        if (get_config IGNORE_RUNNING_PROCESSES) {
+            warn "The following instances of `"$portableApp`" are still running. Scoop is configured to ignore this condition."
+            Write-Host $running_processes
+        } else {
+            error "The following instances of `"$portableApp`" are still running. Close them and try again."
+            Write-Host $running_processes
+            exit 1
+        }
     }
 
     # Run uninstaller if present
