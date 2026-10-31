@@ -383,6 +383,37 @@ function currentdir($app, $global) {
 }
 
 function persistdir($app, $global) { "$(basedir $global)\persist\$app" }
+
+# Portable-Launcher: Directory helpers for PortableApps.com structure
+# Returns the root directory for a portable installation: <portabledir>\<AppName_vVersion>\
+# Example: D:\PortableApps\NotepadPlusPlus_v8.7\
+function portableappdir($app, $version) {
+    if (!$portabledir) {
+        throw "Portable directory not configured. Set SCOOP_PORTABLE environment variable or run 'scoop config PORTABLE_PATH <path>'"
+    }
+    # Sanitize app name and create version-specific directory name
+    $sanitizedApp = sanitary_path $app
+    "$portabledir\${sanitizedApp}_v${version}"
+}
+
+# Returns the App subdirectory for portable installation (where app files go)
+# Example: D:\PortableApps\NotepadPlusPlus_v8.7\App\
+function portableappsubdir($app, $version) {
+    "$(portableappdir $app $version)\App"
+}
+
+# Returns the Data subdirectory for portable installation (for user data)
+# Example: D:\PortableApps\NotepadPlusPlus_v8.7\Data\
+function portabledatadir($app, $version) {
+    "$(portableappdir $app $version)\Data"
+}
+
+# Returns the Other\Scoop subdirectory (for Scoop metadata)
+# Example: D:\PortableApps\NotepadPlusPlus_v8.7\Other\Scoop\
+function portablescoopdir($app, $version) {
+    "$(portableappdir $app $version)\Other\Scoop"
+}
+
 function usermanifestsdir { "$(basedir)\workspace" }
 function usermanifest($app) { "$(usermanifestsdir)\$app.json" }
 function cache_path($app, $version, $url) {
@@ -1383,6 +1414,12 @@ $globaldir = $env:SCOOP_GLOBAL, (get_config GLOBAL_PATH), "$([System.Environment
 #       multiple users write and access cached files at the same time.
 #       Use at your own risk.
 $cachedir = $env:SCOOP_CACHE, (get_config CACHE_PATH), "$scoopdir\cache" | Where-Object { $_ } | Select-Object -First 1 | Get-AbsolutePath
+
+# Portable installations root directory (Portable-Launcher feature)
+# When portable mode is enabled with -p/--portable, apps are installed in a PortableApps.com
+# compatible structure: <portabledir>\<AppName_vVersion>\App\, Data\, Other\Scoop\
+# Environment variable takes precedence over configuration setting.
+$portabledir = $env:SCOOP_PORTABLE, (get_config PORTABLE_PATH) | Where-Object { $_ } | Select-Object -First 1 | ForEach-Object { Get-AbsolutePath $_ }
 
 # Scoop apps' PATH Environment Variable
 $scoopPathEnvVar = switch (get_config USE_ISOLATED_PATH) {
