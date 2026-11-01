@@ -397,9 +397,11 @@ function portableappdir($app, $version) {
 }
 
 # Returns the App subdirectory for portable installation (where app files go)
-# Example: D:\PortableApps\NotepadPlusPlus_v8.7\App\
+# PortableApps.com standard: App files go in App\AppName\
+# Example: D:\PortableApps\NotepadPlusPlus_v8.7\App\NotepadPlusPlus\
 function portableappsubdir($app, $version) {
-    "$(portableappdir $app $version)\App"
+    $sanitizedApp = sanitary_path $app
+    "$(portableappdir $app $version)\App\$sanitizedApp"
 }
 
 # Returns the Data subdirectory for portable installation (for user data)
