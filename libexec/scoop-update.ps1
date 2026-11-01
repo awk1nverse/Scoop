@@ -13,6 +13,7 @@
 #   -s, --skip-hash-check  Skip hash validation (use with caution!)
 #   -q, --quiet            Hide extraneous messages
 #   -a, --all              Update all apps (alternative to '*')
+#   -p, --portable         Update portable installation (refreshes packaging)
 
 . "$PSScriptRoot\..\lib\getopt.ps1"
 . "$PSScriptRoot\..\lib\json.ps1" # 'save_install_info' in 'manifest.ps1' (indirectly)
@@ -29,7 +30,7 @@ if (get_config USE_SQLITE_CACHE) {
     . "$PSScriptRoot\..\lib\database.ps1"
 }
 
-$opt, $apps, $err = getopt $args 'gfiksqa' 'global', 'force', 'independent', 'no-cache', 'skip-hash-check', 'quiet', 'all'
+$opt, $apps, $err = getopt $args 'gfiksqap' 'global', 'force', 'independent', 'no-cache', 'skip-hash-check', 'quiet', 'all', 'portable'
 if ($err) { error "scoop update: $err"; exit 1 }
 $global = $opt.g -or $opt.global
 $force = $opt.f -or $opt.force
@@ -38,6 +39,7 @@ $use_cache = !($opt.k -or $opt.'no-cache')
 $quiet = $opt.q -or $opt.quiet
 $independent = $opt.i -or $opt.independent
 $all = $opt.a -or $opt.all
+$portable = $opt.p -or $opt.portable
 
 # load config
 $configRepo = get_config SCOOP_REPO
@@ -258,6 +260,120 @@ function Sync-Bucket {
     }
 }
 
+# Portable-Launcher: Update portable installation with revision tracking
+function update_portable($app, $version, $force = $false, $quiet = $false, $use_cache = $true, $check_hash = $true) {
+    if (!$portabledir) {
+        error "Portable directory not configured. Set SCOOP_PORTABLE environment variable or run 'scoop config PORTABLE_PATH <path>'"
+        return
+    }
+
+    $portableRoot = portableappdir $app $version
+    if (!(Test-Path $portableRoot)) {
+        error "'$app' ($version) is not installed in portable mode at '$(friendly_path $portableRoot)'."
+        return
+    }
+
+    # Load old installation info
+    $install = install_info $app $version $false $true
+    $old_manifest = installed_manifest $app $version $false $true
+
+    # Get installed revision (default to 1 for backward compatibility)
+    $old_revision = if ($install.portable_revision) { $install.portable_revision } else { 1 }
+
+    # Re-use architecture, bucket and url from original install
+    $architecture = Format-ArchitectureString $install.architecture
+    $bucket = $install.bucket
+    $url = $install.url
+
+    if ($null -eq $bucket -and !$url) { $bucket = 'main' }
+    $manifest = manifest $app $bucket $url
+
+    if (!$manifest) {
+        error "No manifest available for '$app'."
+        return
+    }
+
+    # Get new revision from manifest
+    $new_revision = Get-PortableRevision $manifest
+    $manifest_version = $manifest.version
+
+    # Check if update is needed
+    if (!$force -and ($manifest_version -eq $version) -and ($new_revision -le $old_revision)) {
+        if (!$quiet) {
+            warn "The latest version of '$app' ($version rev $old_revision) is already installed."
+        }
+        return
+    }
+
+    if ($manifest_version -ne $version) {
+        error "Cannot update portable installation: version mismatch. Installed: $version, Available: $manifest_version"
+        error "Portable revision updates work only when the app version stays the same."
+        error "To install a different version, use: scoop install $app@$manifest_version -p"
+        return
+    }
+
+    Write-Host "Updating '$app' (portable) ($version rev $old_revision -> rev $new_revision)"
+
+    # Check for running processes
+    $running_processes = Get-Process | Where-Object { $_.Path -like "$portableRoot\*" } | Out-String
+    if ($running_processes) {
+        if (get_config IGNORE_RUNNING_PROCESSES) {
+            warn "The following instances of `"$app`" are still running. Scoop is configured to ignore this condition."
+            Write-Host $running_processes
+        } else {
+            error "The following instances of `"$app`" are still running. Close them and try again."
+            Write-Host $running_processes
+            return
+        }
+    }
+
+    $dir = portableappsubdir $app $version
+    $persist_dir = portabledatadir $app $version
+
+    Invoke-HookScript -HookType 'pre_uninstall' -Manifest $old_manifest -Arch $architecture
+
+    Write-Host "Uninstalling old portable version ($version rev $old_revision)"
+    Invoke-Installer -Path $dir -Manifest $old_manifest -ProcessorArchitecture $architecture -Global:$false -Uninstall
+
+    # Remove App directory contents but keep Data and Other\Scoop
+    Write-Host "Removing old app files"
+    if (Test-Path $dir) {
+        Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    Invoke-HookScript -HookType 'post_uninstall' -Manifest $old_manifest -Arch $architecture
+
+    # Reinstall with new revision
+    Write-Host "Installing new portable version ($version rev $new_revision)"
+
+    # Ensure App directory exists
+    ensure $dir | Out-Null
+
+    # Download and extract
+    $fname = Invoke-ScoopDownload $app $version $manifest $bucket $architecture $dir $use_cache $check_hash
+    Invoke-Extraction -Path $dir -Name $fname -Manifest $manifest -ProcessorArchitecture $architecture
+    Invoke-HookScript -HookType 'pre_install' -Manifest $manifest -ProcessorArchitecture $architecture
+    Invoke-Installer -Path $dir -Name $fname -Manifest $manifest -ProcessorArchitecture $architecture -AppName $app -Global:$false
+
+    # Restore persist data (Data directory already exists with user data)
+    $original_dir = $dir
+    persist_data $manifest $original_dir $persist_dir
+
+    Invoke-HookScript -HookType 'post_install' -Manifest $manifest -ProcessorArchitecture $architecture
+
+    # Update metadata with new revision
+    save_installed_manifest $app $bucket $portableRoot $url $true
+    save_install_info @{
+        'architecture' = $architecture
+        'url' = $url
+        'bucket' = $bucket
+        'portable' = $true
+        'portable_revision' = $new_revision
+    } $portableRoot $true
+
+    success "'$app' ($version) was updated successfully to revision $new_revision!"
+}
+
 function update($app, $global, $force = $false, $quiet = $false, $independent, $suggested, $use_cache = $true, $check_hash = $true) {
     $old_version = Select-CurrentVersion -AppName $app -Global:$global
     $old_manifest = installed_manifest $app $old_version $global
@@ -412,6 +528,59 @@ if (-not ($apps -or $all)) {
         error 'You need admin rights to update global apps.'; exit 1
     }
 
+    # Portable-Launcher: Handle portable updates separately
+    if ($portable) {
+        if (!$apps) {
+            error 'scoop update: <app> required when using --portable'
+            exit 1
+        }
+
+        if ($apps -eq '*' -or $all) {
+            error 'scoop update: wildcard updates not supported for portable installations'
+            exit 1
+        }
+
+        # Parse app and optional version
+        $apps | ForEach-Object {
+            $app, $null, $version = parse_app $_
+
+            # Find all installed versions of this app in portable mode
+            if (!$portabledir -or !(Test-Path $portabledir)) {
+                error "Portable directory not configured or doesn't exist."
+                exit 1
+            }
+
+            $sanitizedApp = sanitary_path $app
+            $pattern = "${sanitizedApp}_v*"
+            $found = $false
+
+            Get-ChildItem "$portabledir\$pattern" -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+                if ($_.Name -match "^${sanitizedApp}_v(.+)$") {
+                    $installedVersion = $matches[1]
+
+                    # If version specified, only update that version
+                    if ($version -and $installedVersion -ne $version) {
+                        return
+                    }
+
+                    $found = $true
+                    update_portable $app $installedVersion $force $quiet $use_cache $check_hash
+                }
+            }
+
+            if (!$found) {
+                if ($version) {
+                    error "'$app' ($version) is not installed in portable mode."
+                } else {
+                    error "'$app' is not installed in portable mode."
+                }
+            }
+        }
+
+        exit 0
+    }
+
+    # Normal (non-portable) update flow
     $outdated = @()
     $updateScoop = $null -ne ($apps | Where-Object { $_ -eq 'scoop' }) -or (is_scoop_outdated)
     $apps = $apps | Where-Object { $_ -ne 'scoop' }
