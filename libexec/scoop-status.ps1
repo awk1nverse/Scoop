@@ -94,11 +94,44 @@ if ($portabledir -and (Test-Path $portabledir)) {
             # Get installed revision (default to 1 for backward compatibility)
             $installedRevision = if ($install_info.portable_revision) { $install_info.portable_revision } else { 1 }
 
-            # Get current manifest
-            $manifest = manifest $app $install_info.bucket $install_info.url
+            # Get version-specific manifest for this installation
+            # Use the bucket and URL from the installation metadata
+            $bucket = $install_info.bucket
+            $url = $install_info.url
+
+            # Try to get the manifest for the installed version
+            $manifest = $null
+            try {
+                if ($url) {
+                    # Installation from URL - try that first
+                    $manifest = url_manifest $url
+                } elseif ($bucket) {
+                    # Try current bucket manifest first
+                    $current_manifest = manifest $app $bucket $null
+                    if ($current_manifest -and $current_manifest.version -eq $version) {
+                        $manifest = $current_manifest
+                    } else {
+                        # Need historical manifest for this version
+                        $manifest_path = generate_user_manifest $app $bucket $version
+                        if ($manifest_path -and (Test-Path $manifest_path)) {
+                            $manifest = parse_json $manifest_path
+                        }
+                    }
+                }
+            } catch {
+                # Manifest lookup failed - skip this installation
+                return
+            }
+
             if (!$manifest) { return }
 
-            # Get available revision from manifest
+            # Verify manifest version matches installed version
+            if ($manifest.version -ne $version) {
+                # Version mismatch - skip this installation
+                return
+            }
+
+            # Get available revision from version-specific manifest
             $availableRevision = Get-PortableRevision $manifest
 
             # Check if revision is outdated

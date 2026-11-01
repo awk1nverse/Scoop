@@ -285,17 +285,48 @@ function update_portable($app, $version, $force = $false, $quiet = $false, $use_
     $bucket = $install.bucket
     $url = $install.url
 
-    if ($null -eq $bucket -and !$url) { $bucket = 'main' }
-    $manifest = manifest $app $bucket $url
+    # Get version-specific manifest for this installation
+    $manifest = $null
+    if ($url) {
+        # Installation from URL
+        $manifest = url_manifest $url
+    } elseif ($bucket) {
+        # Try current bucket manifest first
+        if ($null -eq $bucket) { $bucket = 'main' }
+        $current_manifest = manifest $app $bucket $null
+        if ($current_manifest -and $current_manifest.version -eq $version) {
+            # Current manifest matches installed version
+            $manifest = $current_manifest
+        } else {
+            # Need historical manifest for this version
+            try {
+                $manifest_path = generate_user_manifest $app $bucket $version
+                if ($manifest_path -and (Test-Path $manifest_path)) {
+                    $manifest = parse_json $manifest_path
+                }
+            } catch {
+                # Historical lookup failed
+            }
+        }
+    }
 
     if (!$manifest) {
-        error "No manifest available for '$app'."
+        error "No manifest available for '$app' version $version."
+        error "The installed version may no longer be available in the bucket."
         return
     }
 
-    # Get new revision from manifest
-    $new_revision = Get-PortableRevision $manifest
+    # Verify manifest version matches installed version
     $manifest_version = $manifest.version
+    if ($manifest_version -ne $version) {
+        error "Cannot update portable installation: version mismatch. Installed: $version, Manifest: $manifest_version"
+        error "Portable revision updates work only when the app version stays the same."
+        error "To install a different version, use: scoop install $app@$manifest_version -p"
+        return
+    }
+
+    # Get new revision from version-specific manifest
+    $new_revision = Get-PortableRevision $manifest
 
     # Check if update is needed
     if (!$force -and ($manifest_version -eq $version) -and ($new_revision -le $old_revision)) {
