@@ -207,6 +207,29 @@ function arch_specific($prop, $manifest, $architecture) {
     if ($manifest.$prop) { return $manifest.$prop }
 }
 
+# Portable-Launcher: Get portable_revision from manifest
+# Returns the portable_revision property, defaulting to 1 if not present
+# This tracks changes to portable packaging independently of app version
+function Get-PortableRevision($manifest) {
+    if ($null -eq $manifest) { return 1 }
+
+    $revision = $manifest.portable_revision
+    if ($null -eq $revision) { return 1 }
+
+    # Ensure it's a positive integer
+    try {
+        $revisionInt = [int]$revision
+        if ($revisionInt -lt 1) {
+            warn "Invalid portable_revision '$revision' in manifest. Must be a positive integer. Using 1."
+            return 1
+        }
+        return $revisionInt
+    } catch {
+        warn "Invalid portable_revision '$revision' in manifest. Must be a positive integer. Using 1."
+        return 1
+    }
+}
+
 function Get-SupportedArchitecture($manifest, $architecture) {
     if ($architecture -eq 'arm64' -and ($manifest | ConvertToPrettyJson) -notmatch '[''"]arm64["'']') {
         # Windows 10 enables existing unmodified x86 apps to run on Arm devices.
