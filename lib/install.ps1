@@ -107,8 +107,16 @@ function install_app($app, $architecture, $global, $suggested, $use_cache = $tru
     # Portable-Launcher: Save metadata to Other\Scoop\ for portable, version dir for normal
     if ($portable) {
         # For portable mode, pass the root directory (not App\ subdirectory)
+        # Include portable_revision from manifest to track packaging changes
+        $portableRevision = Get-PortableRevision $manifest
         save_installed_manifest $app $bucket $portableRoot $url $portable
-        save_install_info @{ 'architecture' = $architecture; 'url' = $url; 'bucket' = $bucket; 'portable' = $true } $portableRoot $portable
+        save_install_info @{
+            'architecture' = $architecture
+            'url' = $url
+            'bucket' = $bucket
+            'portable' = $true
+            'portable_revision' = $portableRevision
+        } $portableRoot $portable
     } else {
         save_installed_manifest $app $bucket $dir $url
         save_install_info @{ 'architecture' = $architecture; 'url' = $url; 'bucket' = $bucket } $dir
