@@ -214,20 +214,34 @@ function Get-PortableRevision($manifest) {
     if ($null -eq $manifest) { return 1 }
 
     $revision = $manifest.portable_revision
+
+    # Missing or null defaults to 1 (no warning - this is expected)
     if ($null -eq $revision) { return 1 }
 
-    # Ensure it's a positive integer
-    try {
-        $revisionInt = [int]$revision
-        if ($revisionInt -lt 1) {
-            warn "Invalid portable_revision '$revision' in manifest. Must be a positive integer. Using 1."
+    # Validate that it's a positive integer
+    # JSON parser returns Int32/Int64 for integers, but may return Double for decimals
+    # We must reject decimals, zero, negatives, booleans, strings, arrays, objects
+
+    # Check type - must be a numeric type
+    if ($revision -isnot [int] -and $revision -isnot [long] -and $revision -isnot [int32] -and $revision -isnot [int64]) {
+        # If it's a Double, it's likely a decimal from JSON
+        if ($revision -is [double]) {
+            warn "Invalid portable_revision '$revision' in manifest. Decimal values are not allowed. Must be a positive integer. Using 1."
             return 1
         }
-        return $revisionInt
-    } catch {
-        warn "Invalid portable_revision '$revision' in manifest. Must be a positive integer. Using 1."
+        # String, boolean, array, object, or other non-numeric type
+        warn "Invalid portable_revision '$revision' in manifest. Must be a positive integer, not $($revision.GetType().Name). Using 1."
         return 1
     }
+
+    # At this point we have an integer type - validate it's positive
+    if ($revision -lt 1) {
+        warn "Invalid portable_revision '$revision' in manifest. Must be a positive integer (>= 1). Using 1."
+        return 1
+    }
+
+    # Valid positive integer
+    return [int]$revision
 }
 
 function Get-SupportedArchitecture($manifest, $architecture) {
