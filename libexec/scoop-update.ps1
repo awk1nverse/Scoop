@@ -361,48 +361,100 @@ function update_portable($app, $version, $force = $false, $quiet = $false, $use_
     $dir = portableappsubdir $app $version
     $persist_dir = portabledatadir $app $version
 
-    Invoke-HookScript -HookType 'pre_uninstall' -Manifest $old_manifest -Arch $architecture
+    # Stage the update in a temporary directory
+    $stagingDir = "$portableRoot\_staging_$([guid]::NewGuid().ToString('N').Substring(0,8))"
+    $backupDir = "$portableRoot\_backup_$([guid]::NewGuid().ToString('N').Substring(0,8))"
+    $updateSucceeded = $false
 
-    Write-Host "Uninstalling old portable version ($version rev $old_revision)"
-    Invoke-Installer -Path $dir -Manifest $old_manifest -ProcessorArchitecture $architecture -Global:$false -Uninstall
+    try {
+        # Create staging directory
+        Write-Host "Staging update in temporary directory"
+        ensure $stagingDir | Out-Null
 
-    # Remove App directory contents but keep Data and Other\Scoop
-    Write-Host "Removing old app files"
-    if (Test-Path $dir) {
-        Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+        # Download and extract to staging directory first
+        Write-Host "Downloading new version"
+        $fname = Invoke-ScoopDownload $app $version $manifest $bucket $architecture $stagingDir $use_cache $check_hash
+
+        Write-Host "Extracting files"
+        Invoke-Extraction -Path $stagingDir -Name $fname -Manifest $manifest -ProcessorArchitecture $architecture
+
+        # Run pre-install hooks in staging directory
+        Invoke-HookScript -HookType 'pre_install' -Manifest $manifest -ProcessorArchitecture $architecture
+
+        # Run installer in staging directory if present
+        Invoke-Installer -Path $stagingDir -Name $fname -Manifest $manifest -ProcessorArchitecture $architecture -AppName $app -Global:$false
+
+        # At this point staging succeeded - now replace the old installation
+
+        # Run pre-uninstall on old installation
+        Invoke-HookScript -HookType 'pre_uninstall' -Manifest $old_manifest -Arch $architecture
+
+        Write-Host "Uninstalling old portable version ($version rev $old_revision)"
+        if (Test-Path $dir) {
+            Invoke-Installer -Path $dir -Manifest $old_manifest -ProcessorArchitecture $architecture -Global:$false -Uninstall
+        }
+
+        Invoke-HookScript -HookType 'post_uninstall' -Manifest $old_manifest -Arch $architecture
+
+        # Backup old App directory before removing it
+        Write-Host "Replacing application files"
+        if (Test-Path $dir) {
+            Move-Item $dir $backupDir -Force -ErrorAction Stop
+        }
+
+        # Move staged files to final location
+        ensure (Split-Path $dir -Parent) | Out-Null
+        Move-Item $stagingDir $dir -Force -ErrorAction Stop
+
+        # Restore persist data (Data directory preserved throughout)
+        $original_dir = $dir
+        persist_data $manifest $original_dir $persist_dir
+
+        Invoke-HookScript -HookType 'post_install' -Manifest $manifest -ProcessorArchitecture $architecture
+
+        # Update metadata with new revision (only after successful installation)
+        save_installed_manifest $app $bucket $portableRoot $url $true
+        save_install_info @{
+            'architecture' = $architecture
+            'url' = $url
+            'bucket' = $bucket
+            'portable' = $true
+            'portable_revision' = $new_revision
+        } $portableRoot $true
+
+        $updateSucceeded = $true
+        success "'$app' ($version) was updated successfully to revision $new_revision!"
+
+    } catch {
+        error "Update failed: $($_.Exception.Message)"
+
+        # Attempt rollback if old files were moved
+        if (Test-Path $backupDir) {
+            Write-Host "Attempting to restore previous installation"
+            try {
+                # Remove failed new installation if it exists
+                if (Test-Path $dir) {
+                    Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+                }
+                # Restore backup
+                Move-Item $backupDir $dir -Force -ErrorAction Stop
+                warn "Previous installation has been restored."
+            } catch {
+                error "Rollback failed: $($_.Exception.Message)"
+                error "Backup is at: $(friendly_path $backupDir)"
+                error "Manual recovery may be required."
+            }
+        }
+    } finally {
+        # Cleanup temporary directories
+        if (Test-Path $stagingDir) {
+            Remove-Item $stagingDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        if ($updateSucceeded -and (Test-Path $backupDir)) {
+            # Only remove backup after successful update
+            Remove-Item $backupDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
-
-    Invoke-HookScript -HookType 'post_uninstall' -Manifest $old_manifest -Arch $architecture
-
-    # Reinstall with new revision
-    Write-Host "Installing new portable version ($version rev $new_revision)"
-
-    # Ensure App directory exists
-    ensure $dir | Out-Null
-
-    # Download and extract
-    $fname = Invoke-ScoopDownload $app $version $manifest $bucket $architecture $dir $use_cache $check_hash
-    Invoke-Extraction -Path $dir -Name $fname -Manifest $manifest -ProcessorArchitecture $architecture
-    Invoke-HookScript -HookType 'pre_install' -Manifest $manifest -ProcessorArchitecture $architecture
-    Invoke-Installer -Path $dir -Name $fname -Manifest $manifest -ProcessorArchitecture $architecture -AppName $app -Global:$false
-
-    # Restore persist data (Data directory already exists with user data)
-    $original_dir = $dir
-    persist_data $manifest $original_dir $persist_dir
-
-    Invoke-HookScript -HookType 'post_install' -Manifest $manifest -ProcessorArchitecture $architecture
-
-    # Update metadata with new revision
-    save_installed_manifest $app $bucket $portableRoot $url $true
-    save_install_info @{
-        'architecture' = $architecture
-        'url' = $url
-        'bucket' = $bucket
-        'portable' = $true
-        'portable_revision' = $new_revision
-    } $portableRoot $true
-
-    success "'$app' ($version) was updated successfully to revision $new_revision!"
 }
 
 function update($app, $global, $force = $false, $quiet = $false, $independent, $suggested, $use_cache = $true, $check_hash = $true) {
