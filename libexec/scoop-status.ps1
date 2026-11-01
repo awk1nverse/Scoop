@@ -76,6 +76,45 @@ $true, $false | ForEach-Object { # local and global apps
     }
 }
 
+# Portable-Launcher: Check portable installations for revision updates
+if ($portabledir -and (Test-Path $portabledir)) {
+    Get-ChildItem $portabledir -Directory | ForEach-Object {
+        # Parse app name and version from directory name: AppName_vVersion
+        if ($_.Name -match '^(.+)_v(.+)$') {
+            $app = $matches[1]
+            $version = $matches[2]
+
+            # Check if this is a valid portable installation
+            $installInfoPath = "$($_.FullName)\Other\Scoop\scoop-install.json"
+            if (!(Test-Path $installInfoPath)) { return }
+
+            $install_info = parse_json $installInfoPath
+            if (!$install_info -or !$install_info.portable) { return }
+
+            # Get installed revision (default to 1 for backward compatibility)
+            $installedRevision = if ($install_info.portable_revision) { $install_info.portable_revision } else { 1 }
+
+            # Get current manifest
+            $manifest = manifest $app $install_info.bucket $install_info.url
+            if (!$manifest) { return }
+
+            # Get available revision from manifest
+            $availableRevision = Get-PortableRevision $manifest
+
+            # Check if revision is outdated
+            if ($availableRevision -gt $installedRevision) {
+                $item = [ordered]@{}
+                $item.Name = "$app (portable)"
+                $item.'Installed Version' = "$version (rev $installedRevision)"
+                $item.'Latest Version' = "$version (rev $availableRevision)"
+                $item.'Missing Dependencies' = ""
+                $item.Info = "Portable packaging updated"
+                $list += [PSCustomObject]$item
+            }
+        }
+    }
+}
+
 if ($list.Length -eq 0 -and !$needs_update -and !$bucket_needs_update -and !$script:network_failure) {
     success 'Everything is ok!'
 }
